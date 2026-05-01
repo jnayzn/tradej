@@ -416,6 +416,69 @@ class WatchLoopTests(unittest.TestCase):
             # One sleep between the 2 iterations (interval=1).
             self.assertEqual(sleeps, [1])
 
+    def test_dry_run_does_not_advance_or_persist_highwater(self) -> None:
+        """Regression: --watch --dry-run must NOT mutate the state file.
+
+        Previously the loop unconditionally called `_advance_highwater` and
+        `_save_state` after every tick, including dry-runs. Because
+        `_run_once` returns a non-empty `new_records` list in dry-run (so
+        the user can preview what *would* be POSTed), the highwater would
+        advance and a subsequent real run would silently filter those
+        records out — never POSTing them to the server.
+
+        The loop must leave the state file untouched when dry-running.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "state.json"
+            args = self._args(state_file, dry_run=True)
+
+            new_records = [{"ticket": 99, "close_time": "2024-05-01T11:00:00+00:00"}]
+            with (
+                mock.patch.object(
+                    mt5_bridge,
+                    "_run_once",
+                    return_value=(new_records, None),
+                ),
+                mock.patch.object(mt5_bridge.signal, "signal"),
+            ):
+                _watch_loop(args, sleep=lambda _s: None, stop_after_iterations=1)
+
+            # State file must not exist — nothing was POSTed, so nothing
+            # to remember.
+            self.assertFalse(
+                state_file.exists(),
+                "dry-run watch tick must not persist a state file",
+            )
+
+    def test_dry_run_preserves_existing_highwater(self) -> None:
+        """A pre-existing state file must not be rewritten in dry-run."""
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "state.json"
+            # Seed with an existing highwater.
+            seed = {
+                "last_seen_close_time": "2024-04-01T00:00:00+00:00",
+                "seen_tickets_at_highwater": [1],
+                "last_run_at": "2024-04-01T00:00:00+00:00",
+            }
+            _save_state(state_file, seed)
+            mtime_before = state_file.stat().st_mtime_ns
+
+            args = self._args(state_file, dry_run=True)
+            new_records = [{"ticket": 99, "close_time": "2024-05-01T11:00:00+00:00"}]
+            with (
+                mock.patch.object(
+                    mt5_bridge,
+                    "_run_once",
+                    return_value=(new_records, None),
+                ),
+                mock.patch.object(mt5_bridge.signal, "signal"),
+            ):
+                _watch_loop(args, sleep=lambda _s: None, stop_after_iterations=1)
+
+            persisted = _load_state(state_file)
+            self.assertEqual(persisted, seed, "dry-run must not mutate the state file")
+            self.assertEqual(state_file.stat().st_mtime_ns, mtime_before)
+
 
 if __name__ == "__main__":
     unittest.main()
