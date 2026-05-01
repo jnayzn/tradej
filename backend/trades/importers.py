@@ -26,6 +26,7 @@ HEADER_ALIASES: dict[str, str] = {
     "pair": "symbol",
     # type
     "type": "order_type",
+    "order_type": "order_type",
     "side": "order_type",
     "direction": "order_type",
     # volume
