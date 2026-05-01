@@ -41,6 +41,19 @@ DEAL_TYPE_BUY = 0
 DEAL_TYPE_SELL = 1
 
 
+def _position_order_type(opens: list[Any], close: Any) -> str:
+    """Return the position direction (BUY/SELL).
+
+    When at least one opening deal is in scope, its `type` matches the
+    position direction directly. Otherwise we have to derive it from the
+    closing deal, whose `type` is the *opposite* of the position direction in
+    MT5 (a BUY position closes with a SELL deal, and vice versa).
+    """
+    if opens:
+        return "BUY" if opens[0].type == DEAL_TYPE_BUY else "SELL"
+    return "SELL" if close.type == DEAL_TYPE_BUY else "BUY"
+
+
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--api-url", default="http://localhost:8000/api", help="Trading Journal API base URL.")
@@ -94,7 +107,7 @@ def _build_trade_records(start: datetime, end: datetime) -> list[dict[str, Any]]
         opening = opens[0] if opens else closes[0]
         close = closes[-1]
 
-        order_type = "BUY" if opening.type == DEAL_TYPE_BUY else "SELL"
+        order_type = _position_order_type(opens, close)
         record: dict[str, Any] = {
             "ticket": int(position_id),
             "symbol": close.symbol,
