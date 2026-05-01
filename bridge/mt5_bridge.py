@@ -441,9 +441,14 @@ def _watch_loop(
                 dry_run=args.dry_run,
                 max_retries=args.max_retries,
             )
-            _advance_highwater(state, new_records)
-            state["last_run_at"] = end.isoformat()
-            _save_state(args.state_file, state)
+            # In dry-run mode `_run_once` returns the records it *would*
+            # have POSTed without actually sending them, so persisting the
+            # highwater here would mark them as already-uploaded and silently
+            # drop them on a later real run. Skip state writes when dry-run.
+            if not args.dry_run:
+                _advance_highwater(state, new_records)
+                state["last_run_at"] = end.isoformat()
+                _save_state(args.state_file, state)
         except requests.RequestException as exc:
             logger.error("Tick failed (network): %s", exc)
         except Exception as exc:  # noqa: BLE001 — we want to keep the loop alive
