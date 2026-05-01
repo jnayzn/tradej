@@ -165,6 +165,21 @@ class ImportersTests(TestCase):
         result = importers.import_records(records)
         self.assertEqual(result.created, 1)
 
+    def test_api_export_round_trips(self) -> None:
+        """The serializer emits `order_type` (the model field), so a JSON
+        export from /api/trades/ must be re-importable as-is.
+        """
+        payload = (
+            '[{"ticket":3001,"symbol":"EURUSD","order_type":"SELL","volume":0.20,'
+            '"open_time":"2024-05-01T09:00:00Z","close_time":"2024-05-01T10:00:00Z",'
+            '"open_price":1.1,"close_price":1.09,"profit":20}]'
+        )
+        records = importers.parse_json(payload)
+        result = importers.import_records(records)
+        self.assertEqual(result.created, 1, result.errors)
+        t = Trade.objects.get(ticket=3001)
+        self.assertEqual(t.order_type, Trade.OrderType.SELL)
+
 
 class APITests(TestCase):
     def setUp(self) -> None:
