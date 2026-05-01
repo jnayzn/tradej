@@ -25,6 +25,7 @@ import mt5_bridge
 from mt5_bridge import (
     DEAL_TYPE_BUY,
     DEAL_TYPE_SELL,
+    _advance_highwater,
     _filter_new_records,
     _load_state,
     _position_order_type,
@@ -71,14 +72,122 @@ class FilterNewRecordsTests(unittest.TestCase):
         self.assertEqual(_filter_new_records(self.records, None), self.records)
         self.assertEqual(_filter_new_records(self.records, ""), self.records)
 
-    def test_drops_records_at_or_before_highwater(self) -> None:
-        # Equal-to-highwater is dropped (already seen).
+    def test_drops_strictly_older_records(self) -> None:
+        # Without a seen-set, equal-to-highwater is *kept* (otherwise the
+        # backfill window can't catch boundary-second siblings) but strictly
+        # older records are still dropped.
         result = _filter_new_records(self.records, "2024-05-01T10:00:00+00:00")
+        self.assertEqual([r["ticket"] for r in result], [2, 3])
+
+    def test_drops_records_already_seen_at_highwater(self) -> None:
+        # When the highwater ticket(s) are recorded, the sibling at the
+        # boundary is what's left.
+        result = _filter_new_records(
+            self.records,
+            "2024-05-01T10:00:00+00:00",
+            seen_tickets_at_highwater=[2],
+        )
         self.assertEqual([r["ticket"] for r in result], [3])
 
     def test_drops_all_when_highwater_after_everything(self) -> None:
-        result = _filter_new_records(self.records, "2024-05-01T12:00:00+00:00")
+        result = _filter_new_records(
+            self.records,
+            "2024-05-01T12:00:00+00:00",
+            seen_tickets_at_highwater=[1, 2, 3],
+        )
         self.assertEqual(result, [])
+
+    def test_boundary_sibling_is_picked_up_on_next_tick(self) -> None:
+        """Regression test for the WATCH_BACKFILL_SECONDS / strict-> bug.
+
+        Two trades A and B both close at exactly 10:00:00 UTC. On tick 1 MT5
+        only returns A (B has not settled yet). The highwater advances to
+        10:00:00 with seen={A}. On tick 2 MT5 returns both A and B. We must
+        keep B (the new sibling) and drop A (the one we already POSTed).
+        """
+        boundary = "2024-05-01T10:00:00+00:00"
+        a = {"ticket": "A", "close_time": boundary}
+        b = {"ticket": "B", "close_time": boundary}
+
+        # Tick 1 — only A is visible.
+        first = _filter_new_records([a], None)
+        self.assertEqual(first, [a])
+
+        # State after tick 1.
+        state: dict[str, Any] = {}
+        _advance_highwater(state, first)
+        self.assertEqual(state["last_seen_close_time"], boundary)
+        self.assertEqual(state["seen_tickets_at_highwater"], ["A"])
+
+        # Tick 2 — MT5 now returns both because of the 60s backfill window.
+        second = _filter_new_records(
+            [a, b],
+            state["last_seen_close_time"],
+            state["seen_tickets_at_highwater"],
+        )
+        self.assertEqual(second, [b], "the boundary-second sibling B must be POSTed")
+
+        # State after tick 2 — highwater unchanged, both tickets remembered.
+        _advance_highwater(state, second)
+        self.assertEqual(state["last_seen_close_time"], boundary)
+        self.assertEqual(state["seen_tickets_at_highwater"], ["A", "B"])
+
+        # Tick 3 — MT5 still returns A and B; both must now be filtered.
+        third = _filter_new_records(
+            [a, b],
+            state["last_seen_close_time"],
+            state["seen_tickets_at_highwater"],
+        )
+        self.assertEqual(third, [])
+
+
+class AdvanceHighwaterTests(unittest.TestCase):
+    def test_no_op_when_no_records(self) -> None:
+        state: dict[str, Any] = {
+            "last_seen_close_time": "2024-05-01T10:00:00+00:00",
+            "seen_tickets_at_highwater": [1],
+        }
+        _advance_highwater(state, [])
+        self.assertEqual(state["last_seen_close_time"], "2024-05-01T10:00:00+00:00")
+        self.assertEqual(state["seen_tickets_at_highwater"], [1])
+
+    def test_advance_replaces_seen_tickets_when_highwater_grows(self) -> None:
+        state: dict[str, Any] = {
+            "last_seen_close_time": "2024-05-01T10:00:00+00:00",
+            "seen_tickets_at_highwater": ["A"],
+        }
+        _advance_highwater(
+            state,
+            [
+                {"ticket": "C", "close_time": "2024-05-01T10:30:00+00:00"},
+                {"ticket": "D", "close_time": "2024-05-01T10:30:00+00:00"},
+            ],
+        )
+        self.assertEqual(state["last_seen_close_time"], "2024-05-01T10:30:00+00:00")
+        # Old ["A"] is wiped because the highwater moved past 10:00:00.
+        self.assertEqual(state["seen_tickets_at_highwater"], ["C", "D"])
+
+    def test_advance_unions_when_highwater_unchanged(self) -> None:
+        state: dict[str, Any] = {
+            "last_seen_close_time": "2024-05-01T10:00:00+00:00",
+            "seen_tickets_at_highwater": ["A"],
+        }
+        _advance_highwater(
+            state,
+            [{"ticket": "B", "close_time": "2024-05-01T10:00:00+00:00"}],
+        )
+        self.assertEqual(state["last_seen_close_time"], "2024-05-01T10:00:00+00:00")
+        self.assertEqual(state["seen_tickets_at_highwater"], ["A", "B"])
+
+    def test_advance_ignores_records_with_no_ticket(self) -> None:
+        state: dict[str, Any] = {}
+        _advance_highwater(
+            state,
+            [{"close_time": "2024-05-01T10:00:00+00:00"}],
+        )
+        # Highwater still advances; ticket list stays empty.
+        self.assertEqual(state["last_seen_close_time"], "2024-05-01T10:00:00+00:00")
+        self.assertEqual(state["seen_tickets_at_highwater"], [])
 
 
 class HighwaterTests(unittest.TestCase):
@@ -262,6 +371,9 @@ class WatchLoopTests(unittest.TestCase):
                 persisted.get("last_seen_close_time"),
                 "2024-05-01T11:00:00+00:00",
             )
+            # The watch loop must persist the boundary-tickets set so the
+            # next tick can distinguish a duplicate from a sibling.
+            self.assertEqual(persisted.get("seen_tickets_at_highwater"), [42])
             self.assertIn("last_run_at", persisted)
             # Sleep was called between iterations — but with only 1 iteration
             # AND stop_after_iterations triggering the break before the sleep
