@@ -1,0 +1,16 @@
+[
+  {
+    "ticket": 9999,
+    "symbol": "AUDUSD",
+    "order_type": "BUY",
+    "volume": "0.10",
+    "open_time": "2024-05-24T09:00:00Z",
+    "close_time": "2024-05-24T10:00:00Z",
+    "open_price": "0.66000",
+    "close_price": "0.66250",
+    "profit": "25.00",
+    "commission": "0",
+    "swap": "0",
+    "comment": "Round-trip fixture for the order_type HEADER_ALIASES identity mapping (PR #3)."
+  }
+]
