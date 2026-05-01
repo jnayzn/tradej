@@ -22,7 +22,16 @@ python -m pip install -r requirements.txt
 > required — without it, PowerShell tries to interpret `.venv` as a module and
 > silently falls back to the system Python (which produces confusing
 > `ModuleNotFoundError: dj_database_url` / `numpy._ARRAY_API not found` errors
-> later).
+> later). Always prefer `python -m pip ...` over bare `pip` for the same
+> reason.
+
+> **NumPy ABI note.** The `MetaTrader5` Python package ships a C extension
+> compiled against a specific NumPy ABI. If you see
+> `AttributeError: _ARRAY_API not found` on import, your installed NumPy is
+> too new for the pinned MT5 version. Either upgrade MT5
+> (`python -m pip install --upgrade MetaTrader5`) or pin `numpy<2`. The pin
+> in `requirements.txt` already targets a recent enough MT5 wheel that
+> supports NumPy 2.x.
 
 ## Configure MT5
 
@@ -35,8 +44,9 @@ Inside the MT5 terminal:
 ## Get your API token
 
 The Trading Journal is multi-user, so the bridge needs an API token to know
-which account to push trades into. Open the dashboard, go to **Settings**,
-and copy the token shown there. Then either pass it on the command line
+which account to push trades into. Open the dashboard, click the username +
+gear icon at the bottom of the sidebar to land on **System Configuration**,
+and copy the **Bearer Token**. Then either pass it on the command line
 with `--api-token <TOKEN>` or export it as an environment variable:
 
 ```powershell
@@ -138,7 +148,7 @@ python mt5_bridge.py --dry-run --days 7
 | Flag | Default | Purpose |
 | --- | --- | --- |
 | `--api-url` | `http://localhost:8000/api` (or `$TRADING_JOURNAL_API_URL`) | Backend API base URL. |
-| `--api-token` | (or `$BRIDGE_API_TOKEN`) | API token for your account (Settings page of the dashboard). Required unless `--dry-run`. |
+| `--api-token` | (or `$BRIDGE_API_TOKEN`) | API token for your account (System Configuration page of the dashboard). Required unless `--dry-run`. |
 | `--days` | `30` | Lookback window in days (one-shot, and first watch tick). |
 | `--watch` | off | Run continuously, polling every `--interval` seconds. |
 | `--interval` | `30` | Watch-mode polling interval (seconds). |

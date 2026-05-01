@@ -46,12 +46,21 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+import requests
+
+_MT5_IMPORT_ERROR: Exception | None = None
 try:
     import MetaTrader5 as mt5  # type: ignore
 except ImportError:  # pragma: no cover — runtime-only Windows dep.
     mt5 = None  # type: ignore[assignment]
-
-import requests
+except Exception as _exc:  # pragma: no cover — e.g. NumPy ABI mismatch.
+    # The MetaTrader5 wheel bundles a C extension compiled against a specific
+    # NumPy ABI. If the installed NumPy is incompatible (e.g. NumPy 2.x with
+    # an old MT5 wheel) the import raises ``AttributeError: _ARRAY_API not
+    # found`` *during* the ``from ._core import *`` line. Surface that to the
+    # user with actionable advice instead of a confusing "not installed".
+    mt5 = None  # type: ignore[assignment]
+    _MT5_IMPORT_ERROR = _exc
 
 # Per the MT5 docs:
 # DEAL_ENTRY_OUT (1) closes a position; DEAL_ENTRY_INOUT (2) reverses.
@@ -147,6 +156,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def _initialize_mt5(args: argparse.Namespace) -> None:
     if mt5 is None:
+        if _MT5_IMPORT_ERROR is not None:
+            sys.exit(
+                "MetaTrader5 failed to import: "
+                f"{type(_MT5_IMPORT_ERROR).__name__}: {_MT5_IMPORT_ERROR}.\n"
+                "This is usually a NumPy ABI mismatch — your installed NumPy "
+                "is incompatible with the MetaTrader5 wheel. Fix:\n"
+                "    pip install --upgrade MetaTrader5\n"
+                "or pin a compatible NumPy:\n"
+                "    pip install 'numpy<2'"
+            )
         sys.exit(
             "MetaTrader5 package not installed. `pip install MetaTrader5` (Windows-only)."
         )
