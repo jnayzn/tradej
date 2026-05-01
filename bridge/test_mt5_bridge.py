@@ -11,10 +11,28 @@ Run from the `bridge/` directory::
 
 from __future__ import annotations
 
+import argparse
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
+from unittest import mock
 
-from mt5_bridge import DEAL_TYPE_BUY, DEAL_TYPE_SELL, _position_order_type
+import requests
+
+import mt5_bridge
+from mt5_bridge import (
+    DEAL_TYPE_BUY,
+    DEAL_TYPE_SELL,
+    _filter_new_records,
+    _load_state,
+    _position_order_type,
+    _post_with_retry,
+    _records_highwater,
+    _save_state,
+    _watch_loop,
+)
 
 
 def _deal(deal_type: int) -> SimpleNamespace:
@@ -40,6 +58,251 @@ class PositionOrderTypeTests(unittest.TestCase):
 
         close = _deal(DEAL_TYPE_BUY)  # BUY deal closes a SELL position.
         self.assertEqual(_position_order_type([], close), "SELL")
+
+
+class FilterNewRecordsTests(unittest.TestCase):
+    records = [
+        {"ticket": 1, "close_time": "2024-05-01T09:00:00+00:00"},
+        {"ticket": 2, "close_time": "2024-05-01T10:00:00+00:00"},
+        {"ticket": 3, "close_time": "2024-05-01T11:00:00+00:00"},
+    ]
+
+    def test_returns_all_records_when_no_highwater(self) -> None:
+        self.assertEqual(_filter_new_records(self.records, None), self.records)
+        self.assertEqual(_filter_new_records(self.records, ""), self.records)
+
+    def test_drops_records_at_or_before_highwater(self) -> None:
+        # Equal-to-highwater is dropped (already seen).
+        result = _filter_new_records(self.records, "2024-05-01T10:00:00+00:00")
+        self.assertEqual([r["ticket"] for r in result], [3])
+
+    def test_drops_all_when_highwater_after_everything(self) -> None:
+        result = _filter_new_records(self.records, "2024-05-01T12:00:00+00:00")
+        self.assertEqual(result, [])
+
+
+class HighwaterTests(unittest.TestCase):
+    def test_returns_max_close_time(self) -> None:
+        records = [
+            {"close_time": "2024-05-01T09:00:00+00:00"},
+            {"close_time": "2024-05-01T11:00:00+00:00"},
+            {"close_time": "2024-05-01T10:00:00+00:00"},
+        ]
+        self.assertEqual(_records_highwater(records), "2024-05-01T11:00:00+00:00")
+
+    def test_returns_none_for_empty(self) -> None:
+        self.assertIsNone(_records_highwater([]))
+
+    def test_ignores_records_without_close_time(self) -> None:
+        records = [{"close_time": "2024-05-01T09:00:00+00:00"}, {"ticket": 2}]
+        self.assertEqual(_records_highwater(records), "2024-05-01T09:00:00+00:00")
+
+
+class StateRoundTripTests(unittest.TestCase):
+    def test_load_returns_empty_when_file_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "missing.json"
+            self.assertEqual(_load_state(path), {})
+
+    def test_save_then_load_round_trips(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "state.json"
+            state = {"last_seen_close_time": "2024-05-01T11:00:00+00:00"}
+            _save_state(path, state)
+            self.assertEqual(_load_state(path), state)
+            # No leftover .tmp file from the atomic write.
+            self.assertFalse(path.with_suffix(path.suffix + ".tmp").exists())
+
+    def test_load_handles_corrupt_state_gracefully(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "state.json"
+            path.write_text("{not valid json")
+            # Corrupt content -> empty state, daemon stays alive.
+            self.assertEqual(_load_state(path), {})
+
+    def test_save_creates_parent_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "nested" / "dirs" / "state.json"
+            _save_state(path, {"k": "v"})
+            self.assertEqual(_load_state(path), {"k": "v"})
+
+
+class _MockResponse:
+    def __init__(
+        self, *, status_code: int = 200, payload: dict[str, Any] | None = None
+    ) -> None:
+        self.status_code = status_code
+        self._payload = payload or {"ok": True}
+
+    def json(self) -> dict[str, Any]:
+        return self._payload
+
+    def raise_for_status(self) -> None:
+        if 400 <= self.status_code:
+            err = requests.HTTPError(f"HTTP {self.status_code}")
+            err.response = self  # type: ignore[assignment]
+            raise err
+
+
+class PostWithRetryTests(unittest.TestCase):
+    def test_succeeds_first_try(self) -> None:
+        sleeps: list[float] = []
+        with mock.patch(
+            "mt5_bridge.requests.post", return_value=_MockResponse()
+        ) as post:
+            result = _post_with_retry(
+                "http://example/api",
+                [{"ticket": 1}],
+                sleep=sleeps.append,
+            )
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(sleeps, [])
+
+    def test_retries_on_transient_network_error_then_succeeds(self) -> None:
+        sleeps: list[float] = []
+        responses = [
+            requests.ConnectionError("DNS lookup failed"),
+            requests.ConnectionError("connection reset"),
+            _MockResponse(payload={"created": 1}),
+        ]
+
+        def _post(*_args: Any, **_kwargs: Any) -> _MockResponse:
+            r = responses.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            return r
+
+        with mock.patch("mt5_bridge.requests.post", side_effect=_post):
+            result = _post_with_retry(
+                "http://example/api",
+                [{"ticket": 1}],
+                base_backoff=2.0,
+                sleep=sleeps.append,
+            )
+        self.assertEqual(result, {"created": 1})
+        # 2 retries → 2 backoff sleeps (2s, 4s).
+        self.assertEqual(sleeps, [2.0, 4.0])
+
+    def test_does_not_retry_4xx(self) -> None:
+        sleeps: list[float] = []
+        with mock.patch(
+            "mt5_bridge.requests.post",
+            return_value=_MockResponse(status_code=400, payload={"error": "bad"}),
+        ) as post:
+            with self.assertRaises(requests.HTTPError):
+                _post_with_retry(
+                    "http://example/api",
+                    [{"ticket": 1}],
+                    sleep=sleeps.append,
+                )
+        self.assertEqual(post.call_count, 1, "4xx should not be retried")
+        self.assertEqual(sleeps, [])
+
+    def test_gives_up_after_max_attempts(self) -> None:
+        sleeps: list[float] = []
+        with mock.patch(
+            "mt5_bridge.requests.post",
+            side_effect=requests.ConnectionError("nope"),
+        ) as post:
+            with self.assertRaises(requests.ConnectionError):
+                _post_with_retry(
+                    "http://example/api",
+                    [{"ticket": 1}],
+                    max_attempts=3,
+                    base_backoff=1.0,
+                    sleep=sleeps.append,
+                )
+        self.assertEqual(post.call_count, 3)
+        # 2 inter-attempt sleeps before the final failure (no sleep after last try).
+        self.assertEqual(sleeps, [1.0, 2.0])
+
+
+class WatchLoopTests(unittest.TestCase):
+    def _args(self, state_file: Path, **overrides: Any) -> argparse.Namespace:
+        defaults = {
+            "api_url": "http://example/api",
+            "days": 30,
+            "login": None,
+            "password": None,
+            "server": None,
+            "terminal_path": None,
+            "dry_run": False,
+            "watch": True,
+            "interval": 1,
+            "state_file": state_file,
+            "max_retries": 3,
+        }
+        defaults.update(overrides)
+        return argparse.Namespace(**defaults)
+
+    def test_loop_runs_tick_and_persists_highwater(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "state.json"
+            args = self._args(state_file)
+
+            new_records = [{"ticket": 42, "close_time": "2024-05-01T11:00:00+00:00"}]
+            sleeps: list[float] = []
+            with (
+                mock.patch.object(
+                    mt5_bridge,
+                    "_run_once",
+                    return_value=(new_records, {"created": 1}),
+                ) as run_once,
+                mock.patch.object(
+                    mt5_bridge.signal,
+                    "signal",
+                ),  # don't actually install handlers in tests
+            ):
+                _watch_loop(args, sleep=sleeps.append, stop_after_iterations=1)
+
+            run_once.assert_called_once()
+            persisted = _load_state(state_file)
+            self.assertEqual(
+                persisted.get("last_seen_close_time"),
+                "2024-05-01T11:00:00+00:00",
+            )
+            self.assertIn("last_run_at", persisted)
+            # Sleep was called between iterations — but with only 1 iteration
+            # AND stop_after_iterations triggering the break before the sleep
+            # path. Either way, no sleep > 0 is expected when we stop after 1.
+            self.assertEqual(sleeps, [])
+
+    def test_loop_keeps_running_when_tick_raises(self) -> None:
+        """A network error inside _run_once must not crash the loop."""
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "state.json"
+            args = self._args(state_file)
+            sleeps: list[float] = []
+
+            calls = {"n": 0}
+
+            def _flaky(
+                **_kwargs: Any,
+            ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise requests.ConnectionError("boom")
+                return (
+                    [{"ticket": 7, "close_time": "2024-05-02T00:00:00+00:00"}],
+                    {"created": 1},
+                )
+
+            with (
+                mock.patch.object(mt5_bridge, "_run_once", side_effect=_flaky),
+                mock.patch.object(mt5_bridge.signal, "signal"),
+            ):
+                _watch_loop(args, sleep=sleeps.append, stop_after_iterations=2)
+
+            self.assertEqual(calls["n"], 2)
+            persisted = _load_state(state_file)
+            # Highwater advances after the successful 2nd tick.
+            self.assertEqual(
+                persisted.get("last_seen_close_time"),
+                "2024-05-02T00:00:00+00:00",
+            )
+            # One sleep between the 2 iterations (interval=1).
+            self.assertEqual(sleeps, [1])
 
 
 if __name__ == "__main__":
