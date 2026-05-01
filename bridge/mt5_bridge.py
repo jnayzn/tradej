@@ -232,23 +232,71 @@ def _save_state(path: Path, state: dict[str, Any]) -> None:
 def _filter_new_records(
     records: list[dict[str, Any]],
     last_seen_close_time: str | None,
+    seen_tickets_at_highwater: list[Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Drop records whose `close_time` is <= the highwater mark.
+    """Drop records that have already been POSTed.
 
-    The boundary is strictly less-than-or-equal so that a record matching the
-    previous mark exactly (which was already POSTed) is filtered out. If two
-    trades close in the same second, both are still picked up on the *next*
-    tick because we widen the MT5 query window by ``WATCH_BACKFILL_SECONDS``.
+    A record is considered *new* when:
+
+    * its ``close_time`` is strictly greater than the highwater mark, OR
+    * its ``close_time`` equals the highwater mark **and** its ``ticket`` is
+      not in ``seen_tickets_at_highwater``.
+
+    The second clause is what makes ``WATCH_BACKFILL_SECONDS`` actually
+    useful: when a fresh tick re-fetches the boundary second, sibling trades
+    that closed at the *same* second as the highwater (but were not yet
+    settled by the previous tick) are picked up instead of being silently
+    dropped by a strict ``>`` comparison.
     """
     if not last_seen_close_time:
         return list(records)
-    return [r for r in records if r.get("close_time", "") > last_seen_close_time]
+    seen_set: set[Any] = set(seen_tickets_at_highwater or [])
+    out: list[dict[str, Any]] = []
+    for r in records:
+        ct = r.get("close_time", "")
+        if ct > last_seen_close_time:
+            out.append(r)
+        elif ct == last_seen_close_time and r.get("ticket") not in seen_set:
+            out.append(r)
+    return out
 
 
 def _records_highwater(records: list[dict[str, Any]]) -> str | None:
     """Return the max `close_time` across `records`, or None if empty."""
     times = [r["close_time"] for r in records if r.get("close_time")]
     return max(times) if times else None
+
+
+def _advance_highwater(
+    state: dict[str, Any], new_records: list[dict[str, Any]]
+) -> None:
+    """Mutate ``state`` to reflect that ``new_records`` were just POSTed.
+
+    Updates two keys:
+
+    * ``last_seen_close_time`` — the max ``close_time`` across the records
+      we have ever POSTed (monotonically increasing).
+    * ``seen_tickets_at_highwater`` — the sorted list of tickets whose
+      ``close_time`` equals the (new) highwater. This is what lets
+      ``_filter_new_records`` distinguish a "second-boundary sibling we
+      haven't seen yet" from "a record we already POSTed last tick".
+    """
+    new_hw = _records_highwater(new_records)
+    if not new_hw:
+        return
+    old_hw = state.get("last_seen_close_time")
+    if old_hw and new_hw == old_hw:
+        seen: set[Any] = set(state.get("seen_tickets_at_highwater", []) or [])
+    else:
+        seen = set()
+    seen.update(
+        r.get("ticket")
+        for r in new_records
+        if r.get("close_time") == new_hw and r.get("ticket") is not None
+    )
+    state["last_seen_close_time"] = new_hw
+    # Sort to keep the on-disk JSON deterministic and diffable.
+    state["seen_tickets_at_highwater"] = sorted(seen)
 
 
 def _post_with_retry(
@@ -315,7 +363,8 @@ def _run_once(
     logger.info("Fetching deals from %s → %s.", start.isoformat(), end.isoformat())
     records = _build_trade_records(start, end)
     last_seen = (state or {}).get("last_seen_close_time")
-    new_records = _filter_new_records(records, last_seen)
+    seen_tickets = (state or {}).get("seen_tickets_at_highwater") or []
+    new_records = _filter_new_records(records, last_seen, seen_tickets)
 
     if not new_records:
         logger.info(
@@ -392,9 +441,7 @@ def _watch_loop(
                 dry_run=args.dry_run,
                 max_retries=args.max_retries,
             )
-            highwater = _records_highwater(new_records)
-            if highwater:
-                state["last_seen_close_time"] = highwater
+            _advance_highwater(state, new_records)
             state["last_run_at"] = end.isoformat()
             _save_state(args.state_file, state)
         except requests.RequestException as exc:
