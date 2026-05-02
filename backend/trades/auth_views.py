@@ -12,6 +12,7 @@ from __future__ import annotations
 from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import IntegrityError, transaction
 from rest_framework import serializers, status
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import api_view, permission_classes
@@ -72,11 +73,22 @@ def register(request: Request) -> Response:
     serializer = _RegisterSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     data = serializer.validated_data
-    user = User.objects.create_user(
-        username=data["username"],
-        email=data.get("email") or "",
-        password=data["password"],
-    )
+    try:
+        # ``validate_username`` does a SELECT-then-create which is racy under
+        # concurrent requests. The DB-level unique constraint is the source of
+        # truth; if a sibling request beats us to it, surface a 400 instead of
+        # leaking a 500 IntegrityError.
+        with transaction.atomic():
+            user = User.objects.create_user(
+                username=data["username"],
+                email=data.get("email") or "",
+                password=data["password"],
+            )
+    except IntegrityError:
+        return Response(
+            {"username": ["Username already taken."]},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     token, _ = Token.objects.get_or_create(user=user)
     return Response(_user_payload(user, token), status=status.HTTP_201_CREATED)
 

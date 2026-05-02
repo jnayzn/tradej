@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from unittest import mock
 
 from django.contrib.auth import get_user_model
+from django.db import IntegrityError
 from django.test import TestCase
 from django.urls import reverse
 from rest_framework.authtoken.models import Token
@@ -353,6 +355,23 @@ class AuthEndpointsTests(TestCase):
             format="json",
         )
         self.assertEqual(resp.status_code, 400)
+
+    def test_register_returns_400_on_concurrent_duplicate_username(self) -> None:
+        # Simulates the TOCTOU race: ``validate_username`` says the name is
+        # free, but a sibling request beats us to ``create_user`` and the DB
+        # unique constraint fires. Without the IntegrityError handler this
+        # surfaces as a 500.
+        with mock.patch(
+            "trades.auth_views.User.objects.create_user",
+            side_effect=IntegrityError("UNIQUE constraint failed"),
+        ):
+            resp = self.client.post(
+                reverse("auth-register"),
+                data={"username": "racer", "password": "Sup3rs3cret!"},
+                format="json",
+            )
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertIn("username", resp.json())
 
     def test_register_rejects_password_too_similar_to_username(self) -> None:
         # Engages Django's UserAttributeSimilarityValidator — only effective
