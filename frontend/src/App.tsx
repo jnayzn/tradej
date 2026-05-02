@@ -7,6 +7,7 @@ import Trades from './pages/Trades';
 import CalendarPage from './pages/Calendar';
 import Analytics from './pages/Analytics';
 import MT5Bridge from './pages/MT5Bridge';
+import SystemConfig from './pages/SystemConfig';
 
 export default function App() {
   return (
@@ -19,6 +20,7 @@ export default function App() {
             <Route path="calendar" element={<CalendarPage />} />
             <Route path="analytics" element={<Analytics />} />
             <Route path="bridge" element={<MT5Bridge />} />
+            <Route path="settings" element={<SystemConfig />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Route>

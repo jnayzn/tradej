@@ -21,6 +21,11 @@ urlpatterns = [
         bridge_views.bridge_regenerate_token,
         name="bridge-regenerate-token",
     ),
+    path(
+        "bridge/profile/",
+        bridge_views.bridge_update_profile,
+        name="bridge-update-profile",
+    ),
     # Multi-user auth endpoints kept available for instances that opt back into
     # password login. Frontend currently does not use them.
     path("auth/register/", auth_views.register, name="auth-register"),

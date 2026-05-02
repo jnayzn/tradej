@@ -25,6 +25,7 @@ import {
   fetchBridgeInfo,
   regenerateBridgeToken,
   setUnauthorizedHandler,
+  updateOwnerProfile,
 } from '../api/client';
 import type { BridgeInfo } from '../types';
 
@@ -34,6 +35,9 @@ interface BridgeContextValue {
   error: string | null;
   refresh: () => Promise<BridgeInfo>;
   regenerate: () => Promise<BridgeInfo>;
+  updateProfile: (input: { username: string }) => Promise<BridgeInfo>;
+  /** Forget the cached token + reset state, then refetch from the server. */
+  terminate: () => Promise<BridgeInfo>;
 }
 
 const BridgeContext = createContext<BridgeContextValue | undefined>(undefined);
@@ -64,6 +68,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const regenerate = useCallback(async (): Promise<BridgeInfo> => {
     const next = await regenerateBridgeToken();
+    persistToken(next.token);
+    setInfo(next);
+    setError(null);
+    return next;
+  }, []);
+
+  const updateProfile = useCallback(
+    async (input: { username: string }): Promise<BridgeInfo> => {
+      const next = await updateOwnerProfile(input);
+      persistToken(next.token);
+      setInfo(next);
+      setError(null);
+      return next;
+    },
+    [],
+  );
+
+  const terminate = useCallback(async (): Promise<BridgeInfo> => {
+    persistToken(null);
+    setInfo(null);
+    const next = await fetchBridgeInfo();
     persistToken(next.token);
     setInfo(next);
     setError(null);
@@ -111,8 +136,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<BridgeContextValue>(
-    () => ({ info, loading, error, refresh, regenerate }),
-    [info, loading, error, refresh, regenerate],
+    () => ({ info, loading, error, refresh, regenerate, updateProfile, terminate }),
+    [info, loading, error, refresh, regenerate, updateProfile, terminate],
   );
 
   return <BridgeContext.Provider value={value}>{children}</BridgeContext.Provider>;

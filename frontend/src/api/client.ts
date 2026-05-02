@@ -109,6 +109,13 @@ export async function regenerateBridgeToken(): Promise<BridgeInfo> {
   return data;
 }
 
+export async function updateOwnerProfile(input: {
+  username: string;
+}): Promise<BridgeInfo> {
+  const { data } = await api.patch<BridgeInfo>('/bridge/profile/', input);
+  return data;
+}
+
 export function bridgeScriptDownloadUrl(): string {
   return `${baseURL}/bridge/script/`;
 }

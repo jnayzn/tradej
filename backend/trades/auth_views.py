@@ -126,6 +126,9 @@ def me(request: Request) -> Response:
 @permission_classes([IsAuthenticated])
 def regenerate_token(request: Request) -> Response:
     """Rotate the user's API token (e.g. after a leak). Old token stops working."""
-    Token.objects.filter(user=request.user).delete()
-    token = Token.objects.create(user=request.user)
+    # Wrap delete+create so a crash between the two can't leave the user
+    # tokenless and locked out — same pattern as ``bridge_regenerate_token``.
+    with transaction.atomic():
+        Token.objects.filter(user=request.user).delete()
+        token = Token.objects.create(user=request.user)
     return Response(_user_payload(request.user, token))

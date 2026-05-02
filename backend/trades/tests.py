@@ -446,6 +446,7 @@ class BridgeInfoEndpointTests(TestCase):
         self.assertEqual(body["owner_username"], "owner")
         self.assertTrue(body["token"])
         self.assertIsNone(body["last_sync_at"])
+        self.assertIsNotNone(body["date_joined"])
         self.assertTrue(User.objects.filter(username="owner").exists())
 
     def test_bridge_info_is_idempotent(self) -> None:
@@ -469,6 +470,16 @@ class BridgeInfoEndpointTests(TestCase):
         resp = client.get(reverse("trade-list"))
         self.assertEqual(resp.status_code, 200, resp.content)
 
+    def test_bridge_info_ignores_stale_authorization_header(self) -> None:
+        """A stale token in the browser's localStorage must not lock the
+        owner out of bootstrapping a fresh session — DRF's TokenAuth would
+        otherwise return 401 before AllowAny ever runs."""
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION="Token thistokendoesnotexistanywhere")
+        resp = client.get(reverse("bridge-info"))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertTrue(resp.json()["token"])
+
 
 class BridgeRegenerateTokenTests(TestCase):
     def test_regenerate_replaces_token(self) -> None:
@@ -491,3 +502,87 @@ class BridgeScriptDownloadTests(TestCase):
         body = b"".join(resp.streaming_content).decode("utf-8", errors="replace")
         self.assertIn("MetaTrader 5", body)
         self.assertIn("--api-token", body)
+
+
+class BridgeUpdateProfileTests(TestCase):
+    """``PATCH /api/bridge/profile/`` lets the owner pick a custom display
+    username from the System Configuration page."""
+
+    def setUp(self) -> None:
+        self.client = APIClient()
+        # Force owner creation.
+        self.client.get(reverse("bridge-info"))
+
+    def test_rename_owner_persists_token(self) -> None:
+        before = self.client.get(reverse("bridge-info")).json()
+        resp = self.client.patch(
+            reverse("bridge-update-profile"),
+            data={"username": "jnayen"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        body = resp.json()
+        self.assertEqual(body["owner_username"], "jnayen")
+        self.assertEqual(body["token"], before["token"])  # token preserved
+        # And the renamed user can still authenticate.
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Token {body['token']}")
+        resp = client.get(reverse("trade-list"))
+        self.assertEqual(resp.status_code, 200)
+
+    def test_rename_strips_whitespace(self) -> None:
+        resp = self.client.patch(
+            reverse("bridge-update-profile"),
+            data={"username": "   aziz   "},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()["owner_username"], "aziz")
+
+    def test_rename_rejects_too_short(self) -> None:
+        resp = self.client.patch(
+            reverse("bridge-update-profile"),
+            data={"username": "x"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("username", resp.json())
+
+    def test_rename_rejects_too_long(self) -> None:
+        resp = self.client.patch(
+            reverse("bridge-update-profile"),
+            data={"username": "x" * 33},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_rename_rejects_disallowed_characters(self) -> None:
+        resp = self.client.patch(
+            reverse("bridge-update-profile"),
+            data={"username": "bad/name"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_rename_requires_username_field(self) -> None:
+        resp = self.client.patch(
+            reverse("bridge-update-profile"),
+            data={},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_rename_is_idempotent_on_same_value(self) -> None:
+        first = self.client.patch(
+            reverse("bridge-update-profile"),
+            data={"username": "owner"},
+            format="json",
+        )
+        self.assertEqual(first.status_code, 200)
+        second = self.client.patch(
+            reverse("bridge-update-profile"),
+            data={"username": "owner"},
+            format="json",
+        )
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.json()["token"], second.json()["token"])
