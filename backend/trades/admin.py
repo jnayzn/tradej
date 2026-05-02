@@ -7,6 +7,7 @@ from .models import Trade
 class TradeAdmin(admin.ModelAdmin):
     list_display = (
         "id",
+        "user",
         "ticket",
         "symbol",
         "order_type",
@@ -17,6 +18,6 @@ class TradeAdmin(admin.ModelAdmin):
         "commission",
         "swap",
     )
-    list_filter = ("symbol", "order_type")
-    search_fields = ("symbol", "comment", "ticket")
+    list_filter = ("user", "symbol", "order_type")
+    search_fields = ("symbol", "comment", "ticket", "user__username")
     date_hierarchy = "close_time"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from django.conf import settings
 from django.db import models
 
 
@@ -18,11 +19,19 @@ class Trade(models.Model):
         BUY = "BUY", "Buy"
         SELL = "SELL", "Sell"
 
-    ticket = models.BigIntegerField(
-        unique=True,
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="trades",
         null=True,
         blank=True,
-        help_text="MT5 deal/position ticket. Used for deduplication when importing.",
+        help_text="Owner of the trade. Null only for legacy rows imported pre-auth.",
+    )
+
+    ticket = models.BigIntegerField(
+        null=True,
+        blank=True,
+        help_text="MT5 deal/position ticket. Used for per-user deduplication when importing.",
     )
     symbol = models.CharField(max_length=32, db_index=True)
     order_type = models.CharField(max_length=8, choices=OrderType.choices)
@@ -66,6 +75,16 @@ class Trade(models.Model):
         indexes = [
             models.Index(fields=["close_time"]),
             models.Index(fields=["symbol", "close_time"]),
+            models.Index(fields=["user", "close_time"]),
+        ]
+        constraints = [
+            # Two users may legitimately have a trade with the same ticket
+            # (e.g. on different brokers), so the uniqueness is scoped per user.
+            models.UniqueConstraint(
+                fields=["user", "ticket"],
+                name="trade_unique_user_ticket",
+                condition=models.Q(ticket__isnull=False),
+            ),
         ]
 
     def __str__(self) -> str:

@@ -1,5 +1,6 @@
 import axios from 'axios';
 import type {
+  AuthPayload,
   CalendarMonth,
   EquityPoint,
   ImportResult,
@@ -14,10 +15,35 @@ const baseURL =
   (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ??
   'http://localhost:8000/api';
 
+export const TOKEN_STORAGE_KEY = 'tradej.authToken';
+
 export const api = axios.create({
   baseURL,
   headers: { 'Content-Type': 'application/json' },
 });
+
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem(TOKEN_STORAGE_KEY);
+  if (token) {
+    config.headers.Authorization = `Token ${token}`;
+  }
+  return config;
+});
+
+let unauthorizedHandler: (() => void) | null = null;
+export function setUnauthorizedHandler(fn: (() => void) | null): void {
+  unauthorizedHandler = fn;
+}
+
+api.interceptors.response.use(
+  (resp) => resp,
+  (error) => {
+    if (error?.response?.status === 401) {
+      unauthorizedHandler?.();
+    }
+    return Promise.reject(error);
+  },
+);
 
 export async function listTrades(params: {
   limit?: number;
@@ -62,5 +88,32 @@ export async function importFile(file: File): Promise<ImportResult> {
   const { data } = await api.post<ImportResult>('/trades/import/', fd, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
+  return data;
+}
+
+export async function register(input: {
+  username: string;
+  email?: string;
+  password: string;
+}): Promise<AuthPayload> {
+  const { data } = await api.post<AuthPayload>('/auth/register/', input);
+  return data;
+}
+
+export async function login(input: {
+  username: string;
+  password: string;
+}): Promise<AuthPayload> {
+  const { data } = await api.post<AuthPayload>('/auth/login/', input);
+  return data;
+}
+
+export async function fetchMe(): Promise<AuthPayload> {
+  const { data } = await api.get<AuthPayload>('/auth/me/');
+  return data;
+}
+
+export async function regenerateToken(): Promise<AuthPayload> {
+  const { data } = await api.post<AuthPayload>('/auth/regenerate-token/');
   return data;
 }

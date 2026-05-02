@@ -1,0 +1,111 @@
+"""Authentication endpoints: register, login, me, regenerate token.
+
+This module exposes the minimal endpoints required to support a multi-user
+deployment of the Trading Journal. Authentication is token-based (DRF
+``TokenAuthentication``) so the same token works for both the web dashboard
+(stored in browser ``localStorage``) and the bridge daemon (passed via
+``--api-token`` / ``BRIDGE_API_TOKEN``).
+"""
+
+from __future__ import annotations
+
+from django.contrib.auth import authenticate, get_user_model
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
+from rest_framework import serializers, status
+from rest_framework.authtoken.models import Token
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.request import Request
+from rest_framework.response import Response
+
+User = get_user_model()
+
+
+class _RegisterSerializer(serializers.Serializer):
+    username = serializers.CharField(min_length=3, max_length=150)
+    email = serializers.EmailField(required=False, allow_blank=True)
+    password = serializers.CharField(min_length=8, write_only=True)
+
+    def validate_username(self, value: str) -> str:
+        if User.objects.filter(username__iexact=value).exists():
+            raise serializers.ValidationError("Username already taken.")
+        return value
+
+    def validate_password(self, value: str) -> str:
+        try:
+            validate_password(value)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(list(exc.messages)) from exc
+        return value
+
+
+class _LoginSerializer(serializers.Serializer):
+    username = serializers.CharField()
+    password = serializers.CharField(write_only=True)
+
+
+def _user_payload(user, token: Token) -> dict:
+    return {
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "date_joined": user.date_joined.isoformat() if user.date_joined else None,
+        },
+        "token": token.key,
+    }
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def register(request: Request) -> Response:
+    """Create a new user account and return its auth token."""
+    serializer = _RegisterSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    data = serializer.validated_data
+    user = User.objects.create_user(
+        username=data["username"],
+        email=data.get("email") or "",
+        password=data["password"],
+    )
+    token, _ = Token.objects.get_or_create(user=user)
+    return Response(_user_payload(user, token), status=status.HTTP_201_CREATED)
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def login(request: Request) -> Response:
+    """Authenticate username + password, returning a token."""
+    serializer = _LoginSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    data = serializer.validated_data
+    user = authenticate(
+        request=request,
+        username=data["username"],
+        password=data["password"],
+    )
+    if user is None or not user.is_active:
+        return Response(
+            {"detail": "Invalid username or password."},
+            status=status.HTTP_401_UNAUTHORIZED,
+        )
+    token, _ = Token.objects.get_or_create(user=user)
+    return Response(_user_payload(user, token))
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def me(request: Request) -> Response:
+    """Return the current user's profile + their existing API token."""
+    token, _ = Token.objects.get_or_create(user=request.user)
+    return Response(_user_payload(request.user, token))
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def regenerate_token(request: Request) -> Response:
+    """Rotate the user's API token (e.g. after a leak). Old token stops working."""
+    Token.objects.filter(user=request.user).delete()
+    token = Token.objects.create(user=request.user)
+    return Response(_user_payload(request.user, token))

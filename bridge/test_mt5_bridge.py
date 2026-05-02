@@ -293,6 +293,34 @@ class PostWithRetryTests(unittest.TestCase):
         # 2 retries → 2 backoff sleeps (2s, 4s).
         self.assertEqual(sleeps, [2.0, 4.0])
 
+    def test_attaches_token_header_when_provided(self) -> None:
+        sleeps: list[float] = []
+        with mock.patch(
+            "mt5_bridge.requests.post", return_value=_MockResponse()
+        ) as post:
+            _post_with_retry(
+                "http://example/api",
+                [{"ticket": 1}],
+                api_token="secret-token",
+                sleep=sleeps.append,
+            )
+        kwargs = post.call_args.kwargs
+        self.assertEqual(
+            kwargs.get("headers", {}).get("Authorization"), "Token secret-token"
+        )
+
+    def test_omits_authorization_header_when_no_token(self) -> None:
+        with mock.patch(
+            "mt5_bridge.requests.post", return_value=_MockResponse()
+        ) as post:
+            _post_with_retry(
+                "http://example/api",
+                [{"ticket": 1}],
+                sleep=lambda _: None,
+            )
+        kwargs = post.call_args.kwargs
+        self.assertNotIn("Authorization", kwargs.get("headers", {}))
+
     def test_does_not_retry_4xx(self) -> None:
         sleeps: list[float] = []
         with mock.patch(
@@ -331,6 +359,7 @@ class WatchLoopTests(unittest.TestCase):
     def _args(self, state_file: Path, **overrides: Any) -> argparse.Namespace:
         defaults = {
             "api_url": "http://example/api",
+            "api_token": None,
             "days": 30,
             "login": None,
             "password": None,

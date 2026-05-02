@@ -23,6 +23,14 @@ deduplication by MT5 ticket means re-runs are always safe.
 Optionally pre-authenticate to a specific account::
 
     python mt5_bridge.py --login 12345 --password "***" --server "ICMarkets-Demo"
+
+The Trading Journal API is multi-user; pass your account's API token (visible
+on the **Settings** page of the dashboard) so trades land in the right journal::
+
+    python mt5_bridge.py --api-token deadbeef... --watch
+
+The token can also be supplied via the ``BRIDGE_API_TOKEN`` environment
+variable, which is what the bundled ``.exe`` reads by default.
 """
 
 from __future__ import annotations
@@ -84,6 +92,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--api-url",
         default=os.environ.get("TRADING_JOURNAL_API_URL", "http://localhost:8000/api"),
         help="Trading Journal API base URL.",
+    )
+    p.add_argument(
+        "--api-token",
+        default=os.environ.get("BRIDGE_API_TOKEN"),
+        help=(
+            "Trading Journal API token (from the Settings page of the "
+            "dashboard). Falls back to the BRIDGE_API_TOKEN env var."
+        ),
     )
     p.add_argument(
         "--days",
@@ -303,6 +319,7 @@ def _post_with_retry(
     api_url: str,
     records: list[dict[str, Any]],
     *,
+    api_token: str | None = None,
     max_attempts: int = 5,
     base_backoff: float = 2.0,
     sleep: Callable[[float], None] = time.sleep,
@@ -311,13 +328,18 @@ def _post_with_retry(
 
     Retries on `requests.RequestException` (network errors, timeouts,
     5xx via `raise_for_status`). 4xx errors are *not* retried — they
-    indicate a malformed payload that won't fix itself.
+    indicate a malformed payload (or a bad token) that won't fix itself.
     """
     url = api_url.rstrip("/") + "/trades/import/"
+    headers: dict[str, str] = {}
+    if api_token:
+        headers["Authorization"] = f"Token {api_token}"
     last_error: Exception | None = None
     for attempt in range(1, max_attempts + 1):
         try:
-            resp = requests.post(url, json={"trades": records}, timeout=30)
+            resp = requests.post(
+                url, json={"trades": records}, headers=headers, timeout=30
+            )
             if 400 <= resp.status_code < 500:
                 resp.raise_for_status()  # surfaces a non-retryable HTTPError
             resp.raise_for_status()
@@ -351,6 +373,7 @@ def _run_once(
     api_url: str,
     start: datetime,
     end: datetime,
+    api_token: str | None = None,
     state: dict[str, Any] | None = None,
     dry_run: bool = False,
     max_retries: int = 5,
@@ -377,7 +400,12 @@ def _run_once(
         print(json.dumps(new_records, indent=2)[:4000])
         return new_records, None
 
-    response = _post_with_retry(api_url, new_records, max_attempts=max_retries)
+    response = _post_with_retry(
+        api_url,
+        new_records,
+        api_token=api_token,
+        max_attempts=max_retries,
+    )
     logger.info("Server: %s", response)
     return new_records, response
 
@@ -435,6 +463,7 @@ def _watch_loop(
         try:
             new_records, _ = _run_once(
                 api_url=args.api_url,
+                api_token=args.api_token,
                 start=start,
                 end=end,
                 state=state,
@@ -467,6 +496,13 @@ def main(argv: list[str] | None = None) -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    if not args.api_token and not args.dry_run:
+        logger.warning(
+            "No API token provided. The Trading Journal API requires "
+            "authentication; POSTs will fail with HTTP 401. Pass --api-token "
+            "or set BRIDGE_API_TOKEN. Get yours from the Settings page of "
+            "the dashboard."
+        )
     _initialize_mt5(args)
 
     if args.watch:
@@ -477,6 +513,7 @@ def main(argv: list[str] | None = None) -> None:
     start = end - timedelta(days=args.days)
     _run_once(
         api_url=args.api_url,
+        api_token=args.api_token,
         start=start,
         end=end,
         dry_run=args.dry_run,

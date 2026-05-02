@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { NavLink, Outlet } from 'react-router-dom';
+import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { useAuth } from '../auth/AuthContext';
 import ImportModal from './ImportModal';
 
 const NAV = [
@@ -7,10 +8,18 @@ const NAV = [
   { to: '/trades', label: 'Trades', icon: TradesIcon },
   { to: '/calendar', label: 'Calendar', icon: CalendarIcon },
   { to: '/analytics', label: 'Analytics', icon: AnalyticsIcon },
+  { to: '/settings', label: 'Settings', icon: SettingsIcon },
 ];
 
 export default function Layout() {
   const [importOpen, setImportOpen] = useState(false);
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+
+  function handleLogout() {
+    logout();
+    navigate('/login', { replace: true });
+  }
 
   return (
     <div className="flex min-h-screen bg-bg text-slate-100">
@@ -36,7 +45,7 @@ export default function Layout() {
             </NavLink>
           ))}
         </nav>
-        <div className="mt-auto">
+        <div className="mt-auto space-y-3">
           <button
             type="button"
             className="btn btn-primary w-full justify-center"
@@ -44,6 +53,17 @@ export default function Layout() {
           >
             Import trades
           </button>
+          <div className="border-t border-border pt-3">
+            <p className="px-2 text-xs text-slate-500">Signed in as</p>
+            <p className="px-2 text-sm font-medium text-slate-200">{user?.username}</p>
+            <button
+              type="button"
+              className="mt-2 w-full text-left text-xs text-slate-400 hover:text-slate-200"
+              onClick={handleLogout}
+            >
+              Sign out
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -57,9 +77,18 @@ export default function Layout() {
             </div>
             <span className="text-sm font-semibold">Trading Journal</span>
           </div>
-          <button type="button" className="btn btn-primary" onClick={() => setImportOpen(true)}>
-            Import
-          </button>
+          <div className="flex items-center gap-2">
+            <button type="button" className="btn btn-primary" onClick={() => setImportOpen(true)}>
+              Import
+            </button>
+            <button
+              type="button"
+              className="text-xs text-slate-400 hover:text-slate-200"
+              onClick={handleLogout}
+            >
+              Sign out
+            </button>
+          </div>
         </header>
         <nav className="flex gap-1 overflow-x-auto border-b border-border bg-bg-900/60 px-2 py-2 md:hidden">
           {NAV.map(({ to, label, icon: Icon, end }) => (
@@ -114,6 +143,14 @@ function AnalyticsIcon({ className }: IconProps) {
     <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M3 3v18h18" />
       <path d="M7 14l4-4 4 4 5-7" />
+    </svg>
+  );
+}
+function SettingsIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
     </svg>
   );
 }

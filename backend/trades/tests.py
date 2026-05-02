@@ -5,12 +5,16 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
+from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
 from . import analytics, importers
 from .models import Trade
+
+User = get_user_model()
 
 
 def make_trade(
@@ -24,9 +28,11 @@ def make_trade(
     ticket: int | None = None,
     commission: str | Decimal = "0",
     swap: str | Decimal = "0",
+    user=None,
 ) -> Trade:
     base = open_time or datetime(2024, 5, 1, 9, 0, tzinfo=UTC)
     return Trade.objects.create(
+        user=user,
         ticket=ticket,
         symbol=symbol,
         order_type=order_type,
@@ -127,6 +133,9 @@ class InsightsTests(TestCase):
 
 
 class ImportersTests(TestCase):
+    def setUp(self) -> None:
+        self.user = User.objects.create_user(username="alice", password="alice12345!")
+
     def test_csv_round_trip(self) -> None:
         csv = (
             "Ticket,Symbol,Type,Volume,Open Time,Close Time,Open Price,Close Price,Profit\n"
@@ -134,10 +143,10 @@ class ImportersTests(TestCase):
             "1002,XAUUSD,SELL,0.05,2024.05.01 10:00:00,2024.05.01 10:45:00,2300.5,2299.0,7.5\n"
         )
         records = importers.parse_csv(csv)
-        result = importers.import_records(records)
+        result = importers.import_records(records, user=self.user)
         self.assertEqual(result.created, 2)
         self.assertEqual(Trade.objects.count(), 2)
-        eu = Trade.objects.get(ticket=1001)
+        eu = Trade.objects.get(user=self.user, ticket=1001)
         self.assertEqual(eu.symbol, "EURUSD")
         self.assertEqual(eu.order_type, Trade.OrderType.BUY)
 
@@ -146,14 +155,29 @@ class ImportersTests(TestCase):
             "Ticket,Symbol,Type,Volume,Open Time,Close Time,Open Price,Close Price,Profit\n"
             "1001,EURUSD,buy,0.10,2024.05.01 09:00:00,2024.05.01 09:30:00,1.1,1.11,10\n"
         )
-        importers.import_records(importers.parse_csv(csv))
+        importers.import_records(importers.parse_csv(csv), user=self.user)
         # Re-import the same row but with a different profit -> should update, not duplicate.
         csv2 = csv.replace(",10\n", ",42\n")
-        result = importers.import_records(importers.parse_csv(csv2))
+        result = importers.import_records(importers.parse_csv(csv2), user=self.user)
         self.assertEqual(result.created, 0)
         self.assertEqual(result.updated, 1)
         self.assertEqual(Trade.objects.count(), 1)
-        self.assertEqual(Trade.objects.get(ticket=1001).profit, Decimal("42"))
+        self.assertEqual(Trade.objects.get(user=self.user, ticket=1001).profit, Decimal("42"))
+
+    def test_same_ticket_under_two_users_is_not_a_conflict(self) -> None:
+        """Two users may legitimately have a trade with the same ticket
+        (e.g. on different brokers). The unique constraint must scope by
+        (user, ticket), not by ticket alone."""
+        bob = User.objects.create_user(username="bob", password="bobpass1234!")
+        csv = (
+            "Ticket,Symbol,Type,Volume,Open Time,Close Time,Open Price,Close Price,Profit\n"
+            "1001,EURUSD,buy,0.10,2024.05.01 09:00:00,2024.05.01 09:30:00,1.1,1.11,10\n"
+        )
+        importers.import_records(importers.parse_csv(csv), user=self.user)
+        importers.import_records(importers.parse_csv(csv), user=bob)
+        self.assertEqual(Trade.objects.count(), 2)
+        self.assertEqual(Trade.objects.filter(user=self.user, ticket=1001).count(), 1)
+        self.assertEqual(Trade.objects.filter(user=bob, ticket=1001).count(), 1)
 
     def test_json_array(self) -> None:
         payload = (
@@ -162,7 +186,7 @@ class ImportersTests(TestCase):
             '"profit":15}]'
         )
         records = importers.parse_json(payload)
-        result = importers.import_records(records)
+        result = importers.import_records(records, user=self.user)
         self.assertEqual(result.created, 1)
 
     def test_api_export_round_trips(self) -> None:
@@ -175,21 +199,25 @@ class ImportersTests(TestCase):
             '"open_price":1.1,"close_price":1.09,"profit":20}]'
         )
         records = importers.parse_json(payload)
-        result = importers.import_records(records)
+        result = importers.import_records(records, user=self.user)
         self.assertEqual(result.created, 1, result.errors)
-        t = Trade.objects.get(ticket=3001)
+        t = Trade.objects.get(user=self.user, ticket=3001)
         self.assertEqual(t.order_type, Trade.OrderType.SELL)
 
 
 class APITests(TestCase):
     def setUp(self) -> None:
+        self.user = User.objects.create_user(username="trader", password="trader1234!")
+        self.token = Token.objects.create(user=self.user)
         self.client = APIClient()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.token.key}")
         base = datetime(2024, 5, 1, 9, 0, tzinfo=UTC)
         for i, p in enumerate([100, -50, 30]):
             make_trade(
                 profit=str(p),
                 open_time=base + timedelta(days=i),
                 close_time=base + timedelta(days=i, minutes=30),
+                user=self.user,
             )
 
     def test_list_trades(self) -> None:
@@ -233,3 +261,140 @@ class APITests(TestCase):
         )
         self.assertEqual(resp.status_code, 201, resp.content)
         self.assertEqual(resp.json()["created"], 1)
+        self.assertEqual(Trade.objects.get(ticket=9001).user, self.user)
+
+
+class APIAuthRequiredTests(TestCase):
+    """Anonymous requests must be rejected on every protected endpoint."""
+
+    def setUp(self) -> None:
+        self.client = APIClient()  # no credentials
+
+    def test_list_trades_unauthenticated(self) -> None:
+        resp = self.client.get(reverse("trade-list"))
+        self.assertIn(resp.status_code, (401, 403))
+
+    def test_summary_unauthenticated(self) -> None:
+        resp = self.client.get(reverse("stats-summary"))
+        self.assertIn(resp.status_code, (401, 403))
+
+    def test_import_unauthenticated(self) -> None:
+        resp = self.client.post(reverse("trade-import-trades"), data={"csv": ""})
+        self.assertIn(resp.status_code, (401, 403))
+
+
+class MultiUserIsolationTests(TestCase):
+    """Two users must never see each other's trades through any endpoint."""
+
+    def setUp(self) -> None:
+        self.alice = User.objects.create_user(username="alice", password="alicepw1234!")
+        self.bob = User.objects.create_user(username="bob", password="bobpw1234!")
+        self.alice_token = Token.objects.create(user=self.alice)
+        self.bob_token = Token.objects.create(user=self.bob)
+        # Alice has 2 trades, Bob has 1.
+        make_trade(profit="100", user=self.alice, ticket=1)
+        make_trade(profit="50", user=self.alice, ticket=2)
+        make_trade(profit="-20", user=self.bob, ticket=3)
+
+    def _client_for(self, token: Token) -> APIClient:
+        c = APIClient()
+        c.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+        return c
+
+    def test_list_trades_only_returns_own(self) -> None:
+        alice = self._client_for(self.alice_token)
+        bob = self._client_for(self.bob_token)
+        self.assertEqual(alice.get(reverse("trade-list")).json()["count"], 2)
+        self.assertEqual(bob.get(reverse("trade-list")).json()["count"], 1)
+
+    def test_summary_is_per_user(self) -> None:
+        alice = self._client_for(self.alice_token)
+        bob = self._client_for(self.bob_token)
+        self.assertAlmostEqual(alice.get(reverse("stats-summary")).json()["total_pnl"], 150.0)
+        self.assertAlmostEqual(bob.get(reverse("stats-summary")).json()["total_pnl"], -20.0)
+
+    def test_cannot_fetch_other_users_trade_by_id(self) -> None:
+        alice_trade = Trade.objects.get(user=self.alice, ticket=1)
+        bob = self._client_for(self.bob_token)
+        resp = bob.get(reverse("trade-detail", args=[alice_trade.id]))
+        self.assertEqual(resp.status_code, 404)
+
+
+class AuthEndpointsTests(TestCase):
+    def setUp(self) -> None:
+        self.client = APIClient()
+
+    def test_register_creates_user_and_returns_token(self) -> None:
+        resp = self.client.post(
+            reverse("auth-register"),
+            data={"username": "newbie", "email": "n@x.com", "password": "Sup3rs3cret!"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        body = resp.json()
+        self.assertEqual(body["user"]["username"], "newbie")
+        self.assertEqual(body["user"]["email"], "n@x.com")
+        self.assertTrue(body["token"])
+        self.assertTrue(User.objects.filter(username="newbie").exists())
+
+    def test_register_rejects_duplicate_username_case_insensitive(self) -> None:
+        User.objects.create_user(username="dup", password="whatever1234!")
+        resp = self.client.post(
+            reverse("auth-register"),
+            data={"username": "DUP", "password": "Sup3rs3cret!"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_register_rejects_short_password(self) -> None:
+        resp = self.client.post(
+            reverse("auth-register"),
+            data={"username": "shorty", "password": "1234"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_login_returns_token(self) -> None:
+        User.objects.create_user(username="loginer", password="LoginPass1!")
+        resp = self.client.post(
+            reverse("auth-login"),
+            data={"username": "loginer", "password": "LoginPass1!"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertTrue(resp.json()["token"])
+
+    def test_login_rejects_bad_password(self) -> None:
+        User.objects.create_user(username="loginer2", password="LoginPass1!")
+        resp = self.client.post(
+            reverse("auth-login"),
+            data={"username": "loginer2", "password": "wrong"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 401)
+
+    def test_me_returns_user_when_authenticated(self) -> None:
+        u = User.objects.create_user(username="me", password="MePassword1!")
+        token = Token.objects.create(user=u)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+        resp = self.client.get(reverse("auth-me"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["user"]["username"], "me")
+        self.assertEqual(resp.json()["token"], token.key)
+
+    def test_me_requires_auth(self) -> None:
+        resp = self.client.get(reverse("auth-me"))
+        self.assertIn(resp.status_code, (401, 403))
+
+    def test_regenerate_token_replaces_old_one(self) -> None:
+        u = User.objects.create_user(username="rotater", password="RotPass12345!")
+        old = Token.objects.create(user=u)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {old.key}")
+        resp = self.client.post(reverse("auth-regenerate-token"))
+        self.assertEqual(resp.status_code, 200)
+        new_key = resp.json()["token"]
+        self.assertNotEqual(new_key, old.key)
+        # Old token must no longer work.
+        self.assertFalse(Token.objects.filter(key=old.key).exists())
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {old.key}")
+        self.assertIn(self.client.get(reverse("auth-me")).status_code, (401, 403))

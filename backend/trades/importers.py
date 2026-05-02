@@ -219,10 +219,13 @@ def _build_trade_kwargs(record: dict[str, Any]) -> tuple[dict[str, Any] | None, 
     return kwargs, None
 
 
-def import_records(records: list[dict[str, Any]]) -> ImportResult:
+def import_records(records: list[dict[str, Any]], user=None) -> ImportResult:
     """Insert / update a batch of normalized records.
 
-    Records with a non-null `ticket` are upserted; others are always created.
+    Records with a non-null `ticket` are upserted **per user**; others are
+    always created. Pass ``user`` to scope the trades to a specific account
+    — omit it (for tests / management commands) only when you really want
+    orphan rows.
     """
     created = updated = skipped = 0
     errors: list[str] = []
@@ -233,11 +236,14 @@ def import_records(records: list[dict[str, Any]]) -> ImportResult:
             skipped += 1
             errors.append(f"row {idx}: {err}")
             continue
+        if user is not None:
+            kwargs["user"] = user
         ticket = kwargs.get("ticket")
         if ticket is not None:
             obj, was_created = Trade.objects.update_or_create(
+                user=user,
                 ticket=ticket,
-                defaults={k: v for k, v in kwargs.items() if k != "ticket"},
+                defaults={k: v for k, v in kwargs.items() if k not in {"ticket", "user"}},
             )
             if was_created:
                 created += 1
