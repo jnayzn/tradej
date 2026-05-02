@@ -35,10 +35,16 @@ export function setUnauthorizedHandler(fn: (() => void) | null): void {
   unauthorizedHandler = fn;
 }
 
+// Auth endpoints that legitimately return 401 on bad credentials; we must
+// NOT treat those as "session expired" and force-logout the user.
+const AUTH_ENDPOINTS = ['/auth/login/', '/auth/register/'];
+
 api.interceptors.response.use(
   (resp) => resp,
   (error) => {
-    if (error?.response?.status === 401) {
+    const requestUrl = error?.config?.url ?? '';
+    const isAuthRequest = AUTH_ENDPOINTS.some((path) => requestUrl.includes(path));
+    if (error?.response?.status === 401 && !isAuthRequest) {
       unauthorizedHandler?.();
     }
     return Promise.reject(error);
