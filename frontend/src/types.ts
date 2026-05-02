@@ -101,3 +101,10 @@ export interface ImportResult {
   skipped: number;
   errors: string[];
 }
+
+export interface BridgeInfo {
+  owner_username: string;
+  token: string;
+  last_sync_at: string | null;
+  date_joined: string | null;
+}

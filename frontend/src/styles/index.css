@@ -33,6 +33,12 @@ body {
   .btn-primary {
     @apply border-brand bg-brand text-white hover:bg-brand-600 hover:border-brand-600;
   }
+  .btn-danger {
+    @apply border-rose-500/50 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 hover:border-rose-500;
+  }
+  .input {
+    @apply w-full rounded-lg border border-border bg-bg-800 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none transition focus:border-brand focus:ring-1 focus:ring-brand;
+  }
   .nav-link {
     @apply flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition hover:bg-bg-700 hover:text-white;
   }

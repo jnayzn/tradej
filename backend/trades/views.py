@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
+from django.db.models import QuerySet
 from django.utils import timezone
 from rest_framework import filters, status, viewsets
 from rest_framework.decorators import action, api_view
@@ -16,12 +17,20 @@ from .serializers import TradeSerializer
 
 
 class TradeViewSet(viewsets.ModelViewSet):
-    queryset = Trade.objects.all()
     serializer_class = TradeSerializer
     filter_backends = [filters.OrderingFilter, filters.SearchFilter]
     search_fields = ["symbol", "comment", "notes"]
     ordering_fields = ["close_time", "open_time", "profit", "symbol"]
     ordering = ["-close_time"]
+
+    def get_queryset(self) -> QuerySet[Trade]:
+        # Authentication is enforced globally (DEFAULT_PERMISSION_CLASSES =
+        # IsAuthenticated), so request.user is guaranteed to be a real user
+        # by the time this is called.
+        return Trade.objects.filter(user=self.request.user)
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
 
     @action(
         detail=False,
@@ -41,7 +50,7 @@ class TradeViewSet(viewsets.ModelViewSet):
                 {"detail": "No records found in payload."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        result = importers.import_records(records)
+        result = importers.import_records(records, user=request.user)
         return Response(result.to_dict(), status=status.HTTP_201_CREATED)
 
     @staticmethod
@@ -69,8 +78,8 @@ class TradeViewSet(viewsets.ModelViewSet):
         return []
 
 
-def _base_qs(request: Request):
-    qs = Trade.objects.all()
+def _base_qs(request: Request) -> QuerySet[Trade]:
+    qs = Trade.objects.filter(user=request.user)
     symbol = request.query_params.get("symbol")
     if symbol:
         qs = qs.filter(symbol__iexact=symbol)

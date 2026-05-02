@@ -12,9 +12,17 @@ is installed and pushes your closed deals to the Trading Journal API.
 ```powershell
 cd bridge
 python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
+
+> **PowerShell tip:** the leading `.\` on `.\.venv\Scripts\Activate.ps1` is
+> required — without it, PowerShell tries to interpret `.venv` as a module and
+> silently falls back to the system Python (which produces confusing
+> `ModuleNotFoundError: dj_database_url` / `numpy._ARRAY_API not found` errors
+> later).
 
 ## Configure MT5
 
@@ -24,13 +32,28 @@ Inside the MT5 terminal:
 2. Make sure the terminal is **logged into the trading account** you want to journal.
 3. Leave the terminal **running** while the bridge script executes.
 
+## Get your API token
+
+The Trading Journal is multi-user, so the bridge needs an API token to know
+which account to push trades into. Open the dashboard, go to **Settings**,
+and copy the token shown there. Then either pass it on the command line
+with `--api-token <TOKEN>` or export it as an environment variable:
+
+```powershell
+$env:BRIDGE_API_TOKEN = "paste-the-token-here"
+```
+
+The bundled `.exe` reads `BRIDGE_API_TOKEN` automatically.
+
 ## Live sync (recommended): `--watch` mode
 
 Run the bridge as a long-running process that polls MT5 every few seconds
 and posts every newly closed position to the journal:
 
 ```powershell
-python mt5_bridge.py --api-url http://localhost:8000/api --watch --interval 30
+python mt5_bridge.py --api-url http://localhost:8000/api `
+                     --api-token <YOUR_TOKEN> `
+                     --watch --interval 30
 ```
 
 What this does on every tick (default every 30s):
@@ -115,6 +138,7 @@ python mt5_bridge.py --dry-run --days 7
 | Flag | Default | Purpose |
 | --- | --- | --- |
 | `--api-url` | `http://localhost:8000/api` (or `$TRADING_JOURNAL_API_URL`) | Backend API base URL. |
+| `--api-token` | (or `$BRIDGE_API_TOKEN`) | API token for your account (Settings page of the dashboard). Required unless `--dry-run`. |
 | `--days` | `30` | Lookback window in days (one-shot, and first watch tick). |
 | `--watch` | off | Run continuously, polling every `--interval` seconds. |
 | `--interval` | `30` | Watch-mode polling interval (seconds). |

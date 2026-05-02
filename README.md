@@ -2,7 +2,7 @@
 
 A SaaS-style trading journal for retail traders. Connect your MetaTrader 5 (MT5) account (or import a CSV/JSON export), automatically log every trade, and visualize your performance in a TradingView-inspired dark-themed dashboard.
 
-> **Status:** MVP v1 — single-user, CSV/JSON import, dashboard, calendar, analytics, MT5 desktop bridge script. Multi-user auth and live MT5 sync are scoped for v2.
+> **Status:** v2 — multi-user auth, near-real-time MT5 sync (`--watch` mode), CSV/JSON import, dashboard, calendar, analytics, smart insights. Self-hostable for free with Railway + Vercel.
 
 ## Features
 
@@ -77,30 +77,55 @@ docker compose up --build
 
 This brings up the backend (with SQLite) on `:8000` and the frontend on `:5173`.
 
+## Sign up & sign in
+
+The API is multi-user. The first time you open the dashboard:
+
+1. Click **Create one** on the login page.
+2. Pick a username (3+ chars) and password (8+ chars). Email is optional.
+3. You're in. Open the **Settings** page and copy your **API token** — the
+   bridge needs it to push trades into your account.
+
+Your trades are private to your account: two users on the same instance never
+see each other's data, even if they have the same MT5 ticket numbers.
+
 ## Importing trades
 
 ### Option A — CSV/JSON upload from the UI
 
 1. Open the dashboard, click **Import** in the sidebar.
 2. Pick a `.csv` or `.json` file (MT5 history export format supported).
-3. Trades are deduplicated by `ticket` if provided.
+3. Trades are deduplicated per-user by `ticket` if provided.
 
-### Option B — MT5 desktop bridge
+### Option B — MT5 desktop bridge (live sync)
 
 The bridge runs on your **Windows** machine where MT5 is installed (the `MetaTrader5` Python package is Windows-only).
 
 ```powershell
 cd bridge
-pip install -r requirements.txt
-python mt5_bridge.py --api-url http://localhost:8000/api --days 30
+python -m venv .venv
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+
+python mt5_bridge.py --api-url http://localhost:8000/api `
+                     --api-token <YOUR_TOKEN> `
+                     --watch --interval 15
 ```
 
-See [`bridge/README.md`](bridge/README.md) for the full set of options (account login, server, lookback window, scheduling).
+Get your `<YOUR_TOKEN>` from the **Settings** page of the dashboard. With
+`--watch`, every position you close in MT5 lands on the dashboard within
+`--interval` seconds, no manual export.
+
+See [`bridge/README.md`](bridge/README.md) for the full set of options
+(account login, server, lookback window, scheduling, running as a Windows
+service).
 
 ### Option C — Direct API
 
 ```bash
 curl -X POST http://localhost:8000/api/trades/import/ \
+     -H "Authorization: Token <YOUR_TOKEN>" \
      -H "Content-Type: application/json" \
      -d @my-trades.json
 ```
@@ -125,13 +150,14 @@ curl -X POST http://localhost:8000/api/trades/import/ \
 2. Build command: `npm run build`. Output directory: `dist`.
 3. Add env var `VITE_API_BASE_URL` pointing to your Railway backend (e.g. `https://trading-journal.up.railway.app/api`).
 
-## Roadmap (v2)
+## Roadmap
 
-- Multi-user auth (JWT or session) with per-user data isolation
-- Live MT5 sync (bridge → websocket → dashboard)
+- Bridge `.exe` built via PyInstaller in CI (so non-Python users can just
+  download and run)
 - Tagging / strategies / playbooks
 - MAE / MFE charting
 - Mobile-first refinements & PWA
+- Optional Stripe billing if you want to run a paid hosted instance
 
 ## License
 

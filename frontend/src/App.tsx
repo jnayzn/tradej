@@ -1,20 +1,30 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
+import { AuthProvider } from './auth/AuthContext';
+import RequireAuth from './auth/RequireAuth';
 import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
 import Trades from './pages/Trades';
 import CalendarPage from './pages/Calendar';
 import Analytics from './pages/Analytics';
+import MT5Bridge from './pages/MT5Bridge';
+import SystemConfig from './pages/SystemConfig';
 
 export default function App() {
   return (
-    <Routes>
-      <Route element={<Layout />}>
-        <Route index element={<Dashboard />} />
-        <Route path="trades" element={<Trades />} />
-        <Route path="calendar" element={<CalendarPage />} />
-        <Route path="analytics" element={<Analytics />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Route>
-    </Routes>
+    <AuthProvider>
+      <Routes>
+        <Route element={<RequireAuth />}>
+          <Route element={<Layout />}>
+            <Route index element={<Dashboard />} />
+            <Route path="trades" element={<Trades />} />
+            <Route path="calendar" element={<CalendarPage />} />
+            <Route path="analytics" element={<Analytics />} />
+            <Route path="bridge" element={<MT5Bridge />} />
+            <Route path="settings" element={<SystemConfig />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Route>
+        </Route>
+      </Routes>
+    </AuthProvider>
   );
 }

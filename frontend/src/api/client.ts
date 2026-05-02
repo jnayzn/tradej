@@ -1,5 +1,6 @@
 import axios from 'axios';
 import type {
+  BridgeInfo,
   CalendarMonth,
   EquityPoint,
   ImportResult,
@@ -10,14 +11,47 @@ import type {
   Trade,
 } from '../types';
 
-const baseURL =
+export const baseURL =
   (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ??
   'http://localhost:8000/api';
+
+export const TOKEN_STORAGE_KEY = 'tradej.authToken';
 
 export const api = axios.create({
   baseURL,
   headers: { 'Content-Type': 'application/json' },
 });
+
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem(TOKEN_STORAGE_KEY);
+  if (token) {
+    config.headers.Authorization = `Token ${token}`;
+  }
+  return config;
+});
+
+let unauthorizedHandler: (() => void) | null = null;
+export function setUnauthorizedHandler(fn: (() => void) | null): void {
+  unauthorizedHandler = fn;
+}
+
+// Endpoints that can legitimately return 401 (the bridge/info endpoint never
+// does, but in case the server's owner token was rotated externally and the
+// stored one is stale, we want to refetch — not bounce to a login screen
+// since there isn't one).
+const SAFE_401_ENDPOINTS = ['/bridge/info/', '/bridge/regenerate-token/'];
+
+api.interceptors.response.use(
+  (resp) => resp,
+  (error) => {
+    const requestUrl = error?.config?.url ?? '';
+    const isSafeRequest = SAFE_401_ENDPOINTS.some((path) => requestUrl.includes(path));
+    if (error?.response?.status === 401 && !isSafeRequest) {
+      unauthorizedHandler?.();
+    }
+    return Promise.reject(error);
+  },
+);
 
 export async function listTrades(params: {
   limit?: number;
@@ -63,4 +97,25 @@ export async function importFile(file: File): Promise<ImportResult> {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
   return data;
+}
+
+export async function fetchBridgeInfo(): Promise<BridgeInfo> {
+  const { data } = await api.get<BridgeInfo>('/bridge/info/');
+  return data;
+}
+
+export async function regenerateBridgeToken(): Promise<BridgeInfo> {
+  const { data } = await api.post<BridgeInfo>('/bridge/regenerate-token/');
+  return data;
+}
+
+export async function updateOwnerProfile(input: {
+  username: string;
+}): Promise<BridgeInfo> {
+  const { data } = await api.patch<BridgeInfo>('/bridge/profile/', input);
+  return data;
+}
+
+export function bridgeScriptDownloadUrl(): string {
+  return `${baseURL}/bridge/script/`;
 }
