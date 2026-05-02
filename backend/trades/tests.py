@@ -429,3 +429,65 @@ class AuthEndpointsTests(TestCase):
         self.assertFalse(Token.objects.filter(key=old.key).exists())
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {old.key}")
         self.assertIn(self.client.get(reverse("auth-me")).status_code, (401, 403))
+
+
+class BridgeInfoEndpointTests(TestCase):
+    """Public ``/api/bridge/info/`` is the entrypoint for the passwordless
+    single-user-per-instance deployment model."""
+
+    def setUp(self) -> None:
+        self.client = APIClient()  # no credentials — endpoint is public
+
+    def test_bridge_info_creates_owner_on_first_call(self) -> None:
+        self.assertFalse(User.objects.filter(username="owner").exists())
+        resp = self.client.get(reverse("bridge-info"))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        body = resp.json()
+        self.assertEqual(body["owner_username"], "owner")
+        self.assertTrue(body["token"])
+        self.assertIsNone(body["last_sync_at"])
+        self.assertTrue(User.objects.filter(username="owner").exists())
+
+    def test_bridge_info_is_idempotent(self) -> None:
+        first = self.client.get(reverse("bridge-info")).json()
+        second = self.client.get(reverse("bridge-info")).json()
+        self.assertEqual(first["token"], second["token"])
+        self.assertEqual(User.objects.filter(username="owner").count(), 1)
+
+    def test_bridge_info_reports_last_sync_at(self) -> None:
+        # Provoke owner creation.
+        self.client.get(reverse("bridge-info"))
+        owner = User.objects.get(username="owner")
+        make_trade(profit="42", user=owner)
+        body = self.client.get(reverse("bridge-info")).json()
+        self.assertIsNotNone(body["last_sync_at"])
+
+    def test_bridge_info_token_is_usable_for_authenticated_endpoints(self) -> None:
+        body = self.client.get(reverse("bridge-info")).json()
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Token {body['token']}")
+        resp = client.get(reverse("trade-list"))
+        self.assertEqual(resp.status_code, 200, resp.content)
+
+
+class BridgeRegenerateTokenTests(TestCase):
+    def test_regenerate_replaces_token(self) -> None:
+        client = APIClient()
+        first = client.get(reverse("bridge-info")).json()
+        rotated = client.post(reverse("bridge-regenerate-token")).json()
+        self.assertNotEqual(first["token"], rotated["token"])
+        self.assertFalse(Token.objects.filter(key=first["token"]).exists())
+        self.assertTrue(Token.objects.filter(key=rotated["token"]).exists())
+
+
+class BridgeScriptDownloadTests(TestCase):
+    def test_script_download_returns_python_file(self) -> None:
+        client = APIClient()
+        resp = client.get(reverse("bridge-script"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp["Content-Type"], "text/x-python")
+        self.assertIn("tradj_bridge.py", resp["Content-Disposition"])
+        # Streamed body should look like the bridge script.
+        body = b"".join(resp.streaming_content).decode("utf-8", errors="replace")
+        self.assertIn("MetaTrader 5", body)
+        self.assertIn("--api-token", body)

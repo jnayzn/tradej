@@ -1,6 +1,6 @@
 import axios from 'axios';
 import type {
-  AuthPayload,
+  BridgeInfo,
   CalendarMonth,
   EquityPoint,
   ImportResult,
@@ -11,7 +11,7 @@ import type {
   Trade,
 } from '../types';
 
-const baseURL =
+export const baseURL =
   (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ??
   'http://localhost:8000/api';
 
@@ -35,16 +35,18 @@ export function setUnauthorizedHandler(fn: (() => void) | null): void {
   unauthorizedHandler = fn;
 }
 
-// Auth endpoints that legitimately return 401 on bad credentials; we must
-// NOT treat those as "session expired" and force-logout the user.
-const AUTH_ENDPOINTS = ['/auth/login/', '/auth/register/'];
+// Endpoints that can legitimately return 401 (the bridge/info endpoint never
+// does, but in case the server's owner token was rotated externally and the
+// stored one is stale, we want to refetch — not bounce to a login screen
+// since there isn't one).
+const SAFE_401_ENDPOINTS = ['/bridge/info/', '/bridge/regenerate-token/'];
 
 api.interceptors.response.use(
   (resp) => resp,
   (error) => {
     const requestUrl = error?.config?.url ?? '';
-    const isAuthRequest = AUTH_ENDPOINTS.some((path) => requestUrl.includes(path));
-    if (error?.response?.status === 401 && !isAuthRequest) {
+    const isSafeRequest = SAFE_401_ENDPOINTS.some((path) => requestUrl.includes(path));
+    if (error?.response?.status === 401 && !isSafeRequest) {
       unauthorizedHandler?.();
     }
     return Promise.reject(error);
@@ -97,29 +99,16 @@ export async function importFile(file: File): Promise<ImportResult> {
   return data;
 }
 
-export async function register(input: {
-  username: string;
-  email?: string;
-  password: string;
-}): Promise<AuthPayload> {
-  const { data } = await api.post<AuthPayload>('/auth/register/', input);
+export async function fetchBridgeInfo(): Promise<BridgeInfo> {
+  const { data } = await api.get<BridgeInfo>('/bridge/info/');
   return data;
 }
 
-export async function login(input: {
-  username: string;
-  password: string;
-}): Promise<AuthPayload> {
-  const { data } = await api.post<AuthPayload>('/auth/login/', input);
+export async function regenerateBridgeToken(): Promise<BridgeInfo> {
+  const { data } = await api.post<BridgeInfo>('/bridge/regenerate-token/');
   return data;
 }
 
-export async function fetchMe(): Promise<AuthPayload> {
-  const { data } = await api.get<AuthPayload>('/auth/me/');
-  return data;
-}
-
-export async function regenerateToken(): Promise<AuthPayload> {
-  const { data } = await api.post<AuthPayload>('/auth/regenerate-token/');
-  return data;
+export function bridgeScriptDownloadUrl(): string {
+  return `${baseURL}/bridge/script/`;
 }

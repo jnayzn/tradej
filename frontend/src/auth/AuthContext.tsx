@@ -1,41 +1,42 @@
+/**
+ * Passwordless single-user-per-instance auth context.
+ *
+ * On mount we fetch ``/api/bridge/info/`` (public endpoint) to discover the
+ * owner's API token, cache it in ``localStorage``, and attach it to every
+ * subsequent API request via the axios interceptor. There is no login flow —
+ * anyone who can reach the deployed URL is treated as the owner. This is
+ * intentional for the "share with friends, one instance per friend" model.
+ *
+ * The provider exposes a refresh + regenerate API so the MT5 Bridge page
+ * can rotate the token and re-poll the sync timestamp.
+ */
 import {
   createContext,
   useCallback,
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
 import {
   TOKEN_STORAGE_KEY,
-  fetchMe,
-  login as loginApi,
-  register as registerApi,
-  regenerateToken as regenerateTokenApi,
+  fetchBridgeInfo,
+  regenerateBridgeToken,
   setUnauthorizedHandler,
 } from '../api/client';
-import type { AuthPayload, User } from '../types';
+import type { BridgeInfo } from '../types';
 
-interface AuthContextValue {
-  user: User | null;
-  token: string | null;
+interface BridgeContextValue {
+  info: BridgeInfo | null;
   loading: boolean;
-  login: (input: { username: string; password: string }) => Promise<AuthPayload>;
-  register: (input: { username: string; email?: string; password: string }) => Promise<AuthPayload>;
-  logout: () => void;
-  regenerateToken: () => Promise<AuthPayload>;
+  error: string | null;
+  refresh: () => Promise<BridgeInfo>;
+  regenerate: () => Promise<BridgeInfo>;
 }
 
-const AuthContext = createContext<AuthContextValue | undefined>(undefined);
-
-function readStoredToken(): string | null {
-  try {
-    return localStorage.getItem(TOKEN_STORAGE_KEY);
-  } catch {
-    return null;
-  }
-}
+const BridgeContext = createContext<BridgeContextValue | undefined>(undefined);
 
 function persistToken(token: string | null): void {
   try {
@@ -47,42 +48,59 @@ function persistToken(token: string | null): void {
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [token, setToken] = useState<string | null>(() => readStoredToken());
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState<boolean>(() => readStoredToken() !== null);
+  const [info, setInfo] = useState<BridgeInfo | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const logout = useCallback(() => {
-    persistToken(null);
-    setToken(null);
-    setUser(null);
+  // Stale-token recovery: if a previously cached token gets rejected by the
+  // server (e.g. someone rotated it on another tab), force a refetch.
+  const refresh = useCallback(async (): Promise<BridgeInfo> => {
+    const next = await fetchBridgeInfo();
+    persistToken(next.token);
+    setInfo(next);
+    setError(null);
+    return next;
   }, []);
 
-  // Wire the axios 401 handler to log out automatically.
+  const regenerate = useCallback(async (): Promise<BridgeInfo> => {
+    const next = await regenerateBridgeToken();
+    persistToken(next.token);
+    setInfo(next);
+    setError(null);
+    return next;
+  }, []);
+
+  // Keep a ref to refresh so the 401 handler effect doesn't churn.
+  const refreshRef = useRef(refresh);
+  useEffect(() => {
+    refreshRef.current = refresh;
+  }, [refresh]);
+
   useEffect(() => {
     setUnauthorizedHandler(() => {
-      logout();
+      // Owner token is stale — refetch silently.
+      refreshRef.current().catch(() => {
+        /* surface via error state on next manual refresh */
+      });
     });
     return () => setUnauthorizedHandler(null);
-  }, [logout]);
+  }, []);
 
-  // On mount with a stored token, validate it via /auth/me/.
   useEffect(() => {
-    if (!token) {
-      setLoading(false);
-      return;
-    }
     let cancelled = false;
     (async () => {
       try {
-        const payload = await fetchMe();
+        const next = await fetchBridgeInfo();
         if (cancelled) return;
-        setUser(payload.user);
-        setToken(payload.token);
-        persistToken(payload.token);
-      } catch {
-        if (!cancelled) {
-          logout();
-        }
+        persistToken(next.token);
+        setInfo(next);
+      } catch (err) {
+        if (cancelled) return;
+        setError(
+          err instanceof Error
+            ? err.message
+            : 'Could not reach the API. Check that the backend is running.',
+        );
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -90,46 +108,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-    // We intentionally only run this once on mount.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleAuth = useCallback((payload: AuthPayload) => {
-    persistToken(payload.token);
-    setToken(payload.token);
-    setUser(payload.user);
-    return payload;
-  }, []);
-
-  const login = useCallback(
-    async (input: { username: string; password: string }) =>
-      handleAuth(await loginApi(input)),
-    [handleAuth],
+  const value = useMemo<BridgeContextValue>(
+    () => ({ info, loading, error, refresh, regenerate }),
+    [info, loading, error, refresh, regenerate],
   );
 
-  const register = useCallback(
-    async (input: { username: string; email?: string; password: string }) =>
-      handleAuth(await registerApi(input)),
-    [handleAuth],
-  );
-
-  const regenerateToken = useCallback(
-    async () => handleAuth(await regenerateTokenApi()),
-    [handleAuth],
-  );
-
-  const value = useMemo<AuthContextValue>(
-    () => ({ user, token, loading, login, register, logout, regenerateToken }),
-    [user, token, loading, login, register, logout, regenerateToken],
-  );
-
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return <BridgeContext.Provider value={value}>{children}</BridgeContext.Provider>;
 }
 
-export function useAuth(): AuthContextValue {
-  const ctx = useContext(AuthContext);
+export function useBridge(): BridgeContextValue {
+  const ctx = useContext(BridgeContext);
   if (!ctx) {
-    throw new Error('useAuth must be used within an AuthProvider');
+    throw new Error('useBridge must be used within an AuthProvider');
   }
   return ctx;
 }

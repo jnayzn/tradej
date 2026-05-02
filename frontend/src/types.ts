@@ -102,14 +102,8 @@ export interface ImportResult {
   errors: string[];
 }
 
-export interface User {
-  id: number;
-  username: string;
-  email: string;
-  date_joined: string | null;
-}
-
-export interface AuthPayload {
-  user: User;
+export interface BridgeInfo {
+  owner_username: string;
   token: string;
+  last_sync_at: string | null;
 }
