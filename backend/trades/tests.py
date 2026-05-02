@@ -354,6 +354,18 @@ class AuthEndpointsTests(TestCase):
         )
         self.assertEqual(resp.status_code, 400)
 
+    def test_register_rejects_password_too_similar_to_username(self) -> None:
+        # Engages Django's UserAttributeSimilarityValidator — only effective
+        # when the candidate user is passed to validate_password().
+        resp = self.client.post(
+            reverse("auth-register"),
+            data={"username": "traderking", "password": "traderking1"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400, resp.content)
+        body = resp.json()
+        self.assertIn("password", body)
+
     def test_login_returns_token(self) -> None:
         User.objects.create_user(username="loginer", password="LoginPass1!")
         resp = self.client.post(

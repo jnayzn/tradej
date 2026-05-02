@@ -32,12 +32,20 @@ class _RegisterSerializer(serializers.Serializer):
             raise serializers.ValidationError("Username already taken.")
         return value
 
-    def validate_password(self, value: str) -> str:
+    def validate(self, attrs: dict) -> dict:
+        # Run Django's password validators *with* a candidate user so that
+        # UserAttributeSimilarityValidator (configured in settings.py) can
+        # actually compare against username/email — passing user=None silently
+        # disables that check.
+        candidate = User(
+            username=attrs.get("username", ""),
+            email=attrs.get("email", "") or "",
+        )
         try:
-            validate_password(value)
+            validate_password(attrs["password"], user=candidate)
         except DjangoValidationError as exc:
-            raise serializers.ValidationError(list(exc.messages)) from exc
-        return value
+            raise serializers.ValidationError({"password": list(exc.messages)}) from exc
+        return attrs
 
 
 class _LoginSerializer(serializers.Serializer):
