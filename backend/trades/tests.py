@@ -404,6 +404,34 @@ class AuthEndpointsTests(TestCase):
         )
         self.assertEqual(resp.status_code, 401)
 
+    def test_login_ignores_stale_authorization_header(self) -> None:
+        """A stale token in the browser's localStorage must not break a
+        legitimate password login — TokenAuth would otherwise return 401
+        before AllowAny ever runs (same fix as bridge_info)."""
+        User.objects.create_user(username="loginer3", password="LoginPass1!")
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION="Token thistokendoesnotexistanywhere")
+        resp = client.post(
+            reverse("auth-login"),
+            data={"username": "loginer3", "password": "LoginPass1!"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+
+    def test_register_ignores_stale_authorization_header(self) -> None:
+        """Same as above for the register endpoint."""
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION="Token thistokendoesnotexistanywhere")
+        resp = client.post(
+            reverse("auth-register"),
+            data={
+                "username": "newcomer",
+                "password": "Z3bra-Pirat3-Kayak!",
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+
     def test_me_returns_user_when_authenticated(self) -> None:
         u = User.objects.create_user(username="me", password="MePassword1!")
         token = Token.objects.create(user=u)

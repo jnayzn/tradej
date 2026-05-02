@@ -15,7 +15,11 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from rest_framework import serializers, status
 from rest_framework.authtoken.models import Token
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import (
+    api_view,
+    authentication_classes,
+    permission_classes,
+)
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -67,6 +71,7 @@ def _user_payload(user, token: Token) -> dict:
 
 
 @api_view(["POST"])
+@authentication_classes([])
 @permission_classes([AllowAny])
 def register(request: Request) -> Response:
     """Create a new user account and return its auth token."""
@@ -94,6 +99,7 @@ def register(request: Request) -> Response:
 
 
 @api_view(["POST"])
+@authentication_classes([])
 @permission_classes([AllowAny])
 def login(request: Request) -> Response:
     """Authenticate username + password, returning a token."""

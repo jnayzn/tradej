@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useBridge } from '../auth/AuthContext';
 import { baseURL, bridgeScriptDownloadUrl } from '../api/client';
 
@@ -48,11 +48,15 @@ export default function MT5Bridge() {
     };
   }, [refresh]);
 
-  const isConnected = useMemo(() => {
+  // Recompute on every render so the 5s ticker keeps the "Connecté" badge
+  // in sync with the "X ago" label — useMemo would only recompute when
+  // ``info`` changes, leaving the badge stuck on stale state for up to 15s
+  // while the sibling text already shows "95s ago".
+  const isConnected = (() => {
     if (!info?.last_sync_at) return false;
     const ts = Date.parse(info.last_sync_at);
     return !Number.isNaN(ts) && Date.now() - ts < FRESH_THRESHOLD_MS;
-  }, [info]);
+  })();
 
   if (!info) return null;
 
