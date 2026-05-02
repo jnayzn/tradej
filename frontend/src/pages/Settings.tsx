@@ -42,8 +42,11 @@ export default function Settings() {
   }
 
   const masked = token ? `${token.slice(0, 6)}${'•'.repeat(Math.max(0, token.length - 10))}${token.slice(-4)}` : '';
+  // Mirror the Reveal/Hide toggle here so a screen-shared Settings page never
+  // leaks the full token via the bridge command snippet.
+  const displayToken = revealed ? token : masked;
   const exampleCommand =
-    `python mt5_bridge.py --api-url ${baseURL} --api-token ${token} --watch --interval 15`;
+    `python mt5_bridge.py --api-url ${baseURL} --api-token ${displayToken} --watch --interval 15`;
 
   return (
     <div className="space-y-8">
